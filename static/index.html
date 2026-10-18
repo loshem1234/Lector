@@ -1,0 +1,200 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#14110f">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<title>Lector</title>
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="icon" href="/static/icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/static/icon-192.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=EB+Garamond:ital,wght@0,400;0,500;0,600;1,400&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/style.css?v=1">
+</head>
+<body>
+
+<!-- Sign in -->
+<section id="v-login" class="view hidden">
+  <form id="login-form" class="login card">
+    <div class="mark">Λ</div>
+    <h1>Lector</h1>
+    <p class="muted">Enter the admin password.</p>
+    <input id="login-pw" type="password" autocomplete="current-password" placeholder="Password" required>
+    <button class="btn primary" type="submit">Sign in</button>
+    <p id="login-err" class="err"></p>
+  </form>
+</section>
+
+<!-- Library -->
+<section id="v-library" class="view hidden">
+  <header class="topbar">
+    <div class="brand"><span class="mark sm">Λ</span> Lector</div>
+    <div class="grow"></div>
+    <button class="btn primary" id="btn-new">New reading</button>
+    <button class="icon-btn" id="btn-logout" title="Sign out" aria-label="Sign out">⏻</button>
+  </header>
+  <main class="wrap">
+    <div id="mock-banner" class="banner hidden">No Gemini API key is set, so audio is placeholder tones. Add <code>GEMINI_API_KEY</code> on Railway.</div>
+    <div id="pw-banner" class="banner hidden">No admin password is set. Add <code>ADMIN_PASSWORD</code> on Railway before sharing the URL anywhere.</div>
+    <div class="lib-head">
+      <h2>Library</h2>
+      <span id="lib-total" class="muted small"></span>
+    </div>
+    <div id="lib-list" class="lib-list"></div>
+    <div id="lib-empty" class="empty hidden">
+      <p>Nothing here yet.</p>
+      <p class="muted">Paste text or upload a PDF to begin.</p>
+    </div>
+  </main>
+</section>
+
+<!-- New document -->
+<section id="v-new" class="view hidden">
+  <header class="topbar">
+    <button class="icon-btn" data-go="library" aria-label="Back">←</button>
+    <div class="brand">New reading</div>
+  </header>
+  <main class="wrap narrow">
+    <div class="tabs" role="tablist">
+      <button class="tab active" data-tab="pdf">Upload PDF</button>
+      <button class="tab" data-tab="text">Paste text</button>
+    </div>
+    <form id="new-form">
+      <div class="tabpane" data-pane="pdf">
+        <label class="drop" id="drop">
+          <input type="file" id="new-file" accept="application/pdf,.pdf,.txt,.md">
+          <span id="drop-label">Choose a PDF, or drop it here</span>
+        </label>
+      </div>
+      <div class="tabpane hidden" data-pane="text">
+        <textarea id="new-text" rows="12" placeholder="Paste text here. Lines like “Chapter 3”, “Part II” or “# Heading” become sections."></textarea>
+      </div>
+      <label class="field">Title <span class="muted">(optional)</span>
+        <input id="new-title" type="text" placeholder="Taken from the file if left blank">
+      </label>
+      <button class="btn primary wide" type="submit" id="new-submit">Continue</button>
+      <p id="new-status" class="muted center"></p>
+    </form>
+  </main>
+</section>
+
+<!-- Reader -->
+<section id="v-reader" class="view hidden">
+  <header class="topbar reader-top">
+    <button class="icon-btn" data-go="library" aria-label="Library">←</button>
+    <div class="title-wrap">
+      <div id="r-title" class="r-title"></div>
+      <div id="r-sub" class="r-sub"></div>
+    </div>
+    <div class="seg" id="view-toggle">
+      <button data-view="text" class="active">Text</button>
+      <button data-view="page">Page</button>
+    </div>
+    <button class="icon-btn" id="btn-contents" title="Contents" aria-label="Contents">☰</button>
+    <button class="icon-btn" id="btn-settings" title="Voice & download" aria-label="Voice and download">⋯</button>
+  </header>
+
+  <div id="gen-pill" class="gen-pill hidden"></div>
+
+  <main id="reader-scroll" class="reader-scroll">
+    <article id="text-view" class="text-view"></article>
+    <div id="page-view" class="page-view hidden">
+      <div class="page-nav">
+        <button class="icon-btn" id="pg-prev" aria-label="Previous page">‹</button>
+        <span id="pg-label" class="muted small"></span>
+        <button class="icon-btn" id="pg-next" aria-label="Next page">›</button>
+      </div>
+      <div id="page-frame" class="page-frame">
+        <img id="page-img" alt="">
+        <div id="page-hl" class="page-hl hidden"></div>
+      </div>
+    </div>
+  </main>
+
+  <footer class="player">
+    <div class="player-meta">
+      <span id="p-section" class="p-section"></span>
+      <span id="p-status" class="p-status"></span>
+    </div>
+    <div class="player-row">
+      <button class="icon-btn" id="p-back" aria-label="Back 15 seconds">↺<small>15</small></button>
+      <button class="play" id="p-play" aria-label="Play">▶</button>
+      <button class="icon-btn" id="p-fwd" aria-label="Forward 15 seconds">↻<small>15</small></button>
+      <button class="rate" id="p-rate" aria-label="Playback speed">1×</button>
+    </div>
+  </footer>
+
+  <!-- Contents drawer -->
+  <aside id="drawer-contents" class="drawer hidden" aria-label="Contents">
+    <div class="drawer-head"><h3>Contents</h3><button class="icon-btn" data-close aria-label="Close">✕</button></div>
+    <div id="toc" class="toc"></div>
+  </aside>
+
+  <!-- Settings drawer -->
+  <aside id="drawer-settings" class="drawer hidden" aria-label="Voice and download">
+    <div class="drawer-head"><h3>Voice &amp; download</h3><button class="icon-btn" data-close aria-label="Close">✕</button></div>
+    <div class="drawer-body">
+      <h4>Voice</h4>
+      <div class="row">
+        <select id="s-voice"></select>
+        <button class="icon-btn" id="s-voice-refresh" title="Reload voices" aria-label="Reload voices">⟳</button>
+      </div>
+      <label class="field">Delivery <span class="muted">(optional)</span>
+        <input id="s-style" type="text" placeholder="e.g. calm, measured, lecture pace">
+      </label>
+      <button class="btn" id="s-apply">Apply voice</button>
+      <p class="muted small">Changing the voice regenerates the audio already made.</p>
+
+      <h4>Download</h4>
+      <button class="btn wide" id="dl-full">Full MP3 with chapters</button>
+      <button class="btn wide" id="dl-zip">One MP3 per section (.zip)</button>
+      <p id="dl-note" class="muted small"></p>
+
+      <h4>Generation</h4>
+      <div id="s-gen" class="muted small"></div>
+      <div class="row wrap-row">
+        <button class="btn" id="s-gen-all">Generate everything</button>
+        <button class="btn" id="s-pause">Pause</button>
+        <button class="btn" id="s-retry">Retry failed</button>
+      </div>
+    </div>
+  </aside>
+
+  <!-- First-time setup -->
+  <div id="setup" class="modal hidden" role="dialog" aria-modal="true">
+    <div class="modal-card">
+      <h3>Ready to read</h3>
+      <p id="setup-summary" class="muted small"></p>
+      <label class="field">Voice
+        <div class="row">
+          <select id="setup-voice"></select>
+          <button class="icon-btn" id="setup-voice-refresh" aria-label="Reload voices">⟳</button>
+        </div>
+      </label>
+      <label class="field">Delivery <span class="muted">(optional)</span>
+        <input id="setup-style" type="text" placeholder="e.g. calm, measured, lecture pace">
+      </label>
+      <div class="field">
+        <div class="row between"><span>Sections to generate</span>
+          <span><button type="button" class="link" id="setup-all">All</button> · <button type="button" class="link" id="setup-none">None</button></span></div>
+        <div id="setup-secs" class="setup-secs"></div>
+        <p id="setup-est" class="muted small"></p>
+      </div>
+      <div class="row end">
+        <button class="btn" id="setup-later">Not now</button>
+        <button class="btn primary" id="setup-go">Start</button>
+      </div>
+      <p id="setup-err" class="err"></p>
+    </div>
+  </div>
+  <div id="scrim" class="scrim hidden"></div>
+</section>
+
+<div id="toast" class="toast hidden"></div>
+<script src="/static/app.js?v=1"></script>
+</body>
+</html>
