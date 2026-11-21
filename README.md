@@ -13,7 +13,8 @@ A private read-along web app for your custom Gemini 3.8 TTS voices. Paste text o
 - **Controls.** Tap any word to start there. Skip 15 seconds back or forward, change speed, and use the lock-screen controls on your phone. Your place is saved on the server, so it carries between computer and phone.
 - **Streaming generation.** Audio is produced passage by passage, starting where you are reading, so playback begins within seconds.
 - **Library.** Every document is kept until you delete it. You can delete just its audio to save space and keep the text.
-- **Export.** One MP3 with chapter markers, a zip with one MP3 per section, or a single section's MP3 from Contents.
+- **Backing tracks.** Upload music or ambience on the **♫ Tracks** page (MP3, M4A, WAV, FLAC or OGG, up to 250 MB). Each track is levelled on upload. In a reading, pick a track under **Voice & download** and set the reading and music volumes separately. The track loops under the reading, fades in and out with play and pause, and stays at normal speed when the voice is sped up. The choice is saved per document, and new documents start with the last one used.
+- **Export.** One MP3 with chapter markers, a zip with one MP3 per section, or a single section's MP3 from Contents. Tick **Include backing track** to mix the music in: the download keeps the same balance between reading and music as your sliders, with the louder of the two at full volume, and chapter markers are kept.
 
 ## Deploy on Railway
 
