@@ -62,6 +62,9 @@ function show(name) {
 
 async function route() {
   const h = location.hash || "#/library";
+  route.prev = route.last;
+  route.last = h;
+  if (!h.startsWith("#/tracks")) PV.stop();
   if (!R.empty() && !h.startsWith("#/read/")) R.close();
   try {
     ME = await api("/api/me");
@@ -70,6 +73,7 @@ async function route() {
   $("#mock-banner").classList.toggle("hidden", !ME.mock);
   $("#pw-banner").classList.toggle("hidden", !!ME.password_set);
   if (h.startsWith("#/new")) { show("new"); resetNew(); }
+  else if (h.startsWith("#/tracks")) { show("tracks"); loadTracks(); }
   else if (h.startsWith("#/read/")) { show("reader"); R.open(h.slice(7)); }
   else { show("library"); loadLibrary(); }
 }
@@ -278,6 +282,7 @@ const R = {
   close() {
     this.saveProgress(true);
     this.audio.pause();
+    B.stop(true);
     cancelAnimationFrame(this.raf);
     clearTimeout(this.pollT);
     this.id = null;
@@ -313,6 +318,8 @@ const R = {
     this.view = isPdf ? (localStorage.getItem("lector.view") || this.meta.view || "text") : "text";
     if (this.meta.rate) this.rate = this.meta.rate;
     this.setRate(this.rate, false);
+    try { await B.load(); } catch (_) {}
+    B.setChoice(this.meta.backtrack);
     await this.refreshManifest();
     const local = parseInt(localStorage.getItem("lector.pos." + id) || "-1", 10);
     const start = Number.isInteger(this.meta.progress) ? this.meta.progress : (local >= 0 ? local : this.firstReadable());
@@ -393,7 +400,8 @@ const R = {
       pill.classList.remove("hidden");
     } else pill.classList.add("hidden");
     const secs = this.doc.sections.length;
-    $("#r-sub").textContent = [this.meta.voice_name, `${secs} section${secs === 1 ? "" : "s"}`].filter(Boolean).join(" · ");
+    $("#r-sub").textContent = [this.meta.voice_name, `${secs} section${secs === 1 ? "" : "s"}`,
+      B.choice.id ? "♫ " + B.name(B.choice.id) : ""].filter(Boolean).join(" · ");
     $("#s-gen").textContent = active.length
       ? `${done} of ${active.length} passages ready${errs ? ` · ${errs} failed` : ""}${this.manifest?.paused ? " · paused" : ""}`
       : "Nothing queued yet.";
@@ -560,6 +568,7 @@ const R = {
 
   /* ---- playback */
   unlock() {
+    B.unlock();
     if (this.unlocked) return;
     this.unlocked = true;
     const a = this.audio;
@@ -677,7 +686,7 @@ const R = {
     this.unlock();
     const a = this.audio;
     if (this.waitFor) { this.waitFor = null; this.setPlayIcon(); return; }
-    if (!a.paused) { a.pause(); this.saveProgress(true); return; }
+    if (!a.paused && a.src !== SILENT) { a.pause(); this.saveProgress(true); return; }
     const c = this.chunks[this.chunk];
     const curChunk = this.cur != null ? this.chunkForWord(this.cur) : null;
     if (c && c.status === "done" && a.src.includes(c.file) && curChunk && curChunk.i === c.i && a.currentTime > 0 && !a.ended) {
@@ -807,9 +816,263 @@ const R = {
 
 R.audio.preload = "auto";
 R.audio.addEventListener("ended", () => R.onEnded());
-R.audio.addEventListener("play", () => { R.setPlayIcon(); R.tick(); });
-R.audio.addEventListener("pause", () => R.setPlayIcon());
+R.audio.addEventListener("play", () => { R.setPlayIcon(); R.tick(); if (R.audio.src !== SILENT) B.onSpeechPlay(); });
+R.audio.addEventListener("pause", () => { R.setPlayIcon(); B.onSpeechPause(); });
 R.audio.addEventListener("error", () => { if (R.audio.src && R.audio.src !== SILENT) { toast("Audio failed to load"); R.setPlayIcon(); } });
+
+/* ------------------------------------------------------------------ backing tracks */
+
+const B = {
+  tracks: null, choice: { id: null, volume: 0.3, voice_volume: 1 }, audio: new Audio(),
+  ctx: null, gain: null, level: 0, fadeT: null, pauseT: null, saveT: null,
+  // iPhone and iPad ignore audio.volume, so there the level goes through Web Audio instead
+  useGain: (() => { try { const t = new Audio(); t.volume = 0.5; return Math.abs(t.volume - 0.5) > 0.01; } catch (_) { return true; } })(),
+
+  async load(refresh = false) {
+    if (this.tracks && !refresh) return this.tracks;
+    const r = await api("/api/backtracks");
+    this.tracks = r.items;
+    this.totalSize = r.total_size;
+    return this.tracks;
+  },
+  name(id) { return (this.tracks || []).find((t) => t.id === id)?.name || "Backing track"; },
+
+  setChoice(c) {
+    this.choice = { id: c?.id || null, volume: c?.volume ?? 0.3, voice_volume: c?.voice_volume ?? 1 };
+    this.applyVoice();
+    const url = this.choice.id ? `/api/backtracks/${this.choice.id}.mp3` : "";
+    if (!url) {
+      this.stop(true);
+      this.audio.removeAttribute("src");
+      return;
+    }
+    if (!this.audio.src.endsWith(url)) {
+      this.audio.pause();
+      this.audio.loop = true;
+      this.audio.preload = "auto";
+      this.audio.src = url;
+      if (!R.audio.paused) this.start();
+    }
+    this.applyLevel();
+  },
+
+  ensureGraph() {
+    if (this.ctx || !this.useGain) return;
+    const AC = window.AudioContext || window.webkitAudioContext;
+    if (!AC) { this.useGain = false; return; }
+    this.ctx = new AC();
+    const src = this.ctx.createMediaElementSource(this.audio);
+    this.gain = this.ctx.createGain();
+    src.connect(this.gain).connect(this.ctx.destination);
+  },
+  unlock() {
+    if (!this.useGain) return;
+    this.ensureGraph();
+    if (this.ctx && this.ctx.state !== "running") this.ctx.resume().catch(() => {});
+  },
+  setOut(v) {
+    v = Math.max(0, Math.min(1, v));
+    if (this.useGain) { this.ensureGraph(); if (this.gain) this.gain.gain.value = v; }
+    else this.audio.volume = v;
+  },
+  applyLevel() { this.setOut(this.level * this.choice.volume); },
+  // the reading's own level only applies while music is playing under it
+  applyVoice() { R.audio.volume = this.choice.id ? this.choice.voice_volume : 1; },
+
+  fadeTo(target, ms, done) {
+    clearInterval(this.fadeT);
+    const from = this.level, t0 = performance.now();
+    if (ms <= 0) { this.level = target; this.applyLevel(); done && done(); return; }
+    this.fadeT = setInterval(() => {
+      const k = Math.min(1, (performance.now() - t0) / ms);
+      this.level = from + (target - from) * k;
+      this.applyLevel();
+      if (k >= 1) { clearInterval(this.fadeT); done && done(); }
+    }, 30);
+  },
+  start() {
+    clearTimeout(this.pauseT);
+    if (!this.choice.id || !this.audio.src) return;
+    this.unlock();
+    if (this.audio.paused) {
+      this.level = 0;
+      this.applyLevel();
+      this.audio.play().catch(() => {});
+    }
+    this.fadeTo(1, 900);
+  },
+  stop(immediate = false) {
+    clearTimeout(this.pauseT);
+    if (immediate) { clearInterval(this.fadeT); this.level = 0; this.audio.pause(); return; }
+    this.fadeTo(0, 700, () => this.audio.pause());
+  },
+  onSpeechPlay() { this.start(); },
+  // a short pause between passages shouldn't stop the music, so wait a moment first
+  onSpeechPause() {
+    clearTimeout(this.pauseT);
+    this.pauseT = setTimeout(() => { if (R.audio.paused) this.stop(); }, 1200);
+  },
+
+  includeInDownload() { return localStorage.getItem("lector.dlbt") !== "0"; },
+
+  async fillDrawer() {
+    try { await this.load(); } catch (e) { toast(e.message); }
+    const sel = $("#s-bt");
+    sel.innerHTML = `<option value="">None</option>` +
+      (this.tracks || []).map((t) => `<option value="${t.id}">${esc(t.name)}</option>`).join("");
+    sel.value = this.choice.id || "";
+    $("#s-bt-vol").value = Math.round(this.choice.volume * 100);
+    $("#s-voice-vol").value = Math.round(this.choice.voice_volume * 100);
+    this.drawerState();
+  },
+  drawerState() {
+    const on = !!this.choice.id;
+    $("#s-bt-vol-row").classList.toggle("hidden", !on);
+    $("#s-bt-vol-label").textContent = Math.round(this.choice.volume * 100) + "%";
+    $("#s-voice-vol-label").textContent = Math.round(this.choice.voice_volume * 100) + "%";
+    const v = this.choice.voice_volume, m = this.choice.volume;
+    $("#s-ratio").textContent = !on ? "" : v === 0 ? "The reading is muted." : m === 0 ? "The music is muted."
+      : `Music at ${Math.round((100 * m) / v)}% of the reading's level. Downloads keep this balance, with the louder of the two at full volume.`;
+    const box = $("#dl-bt");
+    box.disabled = !on;
+    box.checked = on && this.includeInDownload();
+    $("#dl-bt-row").classList.toggle("off", !on);
+    $("#dl-bt-name").textContent = on ? `(${this.name(this.choice.id)})` : "(none selected)";
+  },
+  save() {
+    clearTimeout(this.saveT);
+    this.saveT = setTimeout(async () => {
+      if (!R.id) return;
+      try {
+        R.meta.backtrack = await api(`/api/docs/${R.id}/backtrack`, { json: this.choice });
+      } catch (e) { toast(e.message); }
+    }, 400);
+  },
+};
+B.audio.loop = true;
+
+/* preview player on the tracks page */
+const PV = {
+  audio: new Audio(), id: null,
+  toggle(id) {
+    if (this.id === id && !this.audio.paused) return this.stop();
+    this.audio.src = `/api/backtracks/${id}.mp3`;
+    this.audio.volume = 0.8;
+    this.audio.play().catch(() => {});
+    this.id = id;
+    this.mark();
+  },
+  stop() { this.audio.pause(); this.id = null; this.mark(); },
+  mark() { $$(".track .prev").forEach((b) => { const on = b.dataset.id === this.id; b.classList.toggle("on", on); b.textContent = on ? "❚❚" : "▶"; }); },
+};
+PV.audio.addEventListener("ended", () => PV.stop());
+
+async function loadTracks() {
+  let items;
+  try { items = await B.load(true); } catch (e) { return; }
+  $("#tracks-total").textContent = items.length ? `${items.length} track${items.length === 1 ? "" : "s"} · ${fmtSize(B.totalSize)}` : "";
+  $("#tracks-empty").classList.toggle("hidden", items.length > 0);
+  const list = $("#tracks-list");
+  list.innerHTML = "";
+  for (const t of items) {
+    const el = document.createElement("div");
+    el.className = "track card";
+    el.innerHTML = `<button class="prev" data-id="${t.id}" aria-label="Preview">▶</button>
+      <div class="body"><div class="t">${esc(t.name)}</div><div class="m">${fmtClock(t.duration)} · ${fmtSize(t.size)}</div></div>
+      <div class="menu"><button class="icon-btn" aria-label="More">⋯</button></div>`;
+    el.querySelector(".prev").addEventListener("click", () => PV.toggle(t.id));
+    el.querySelector(".menu .icon-btn").addEventListener("click", (e) => {
+      e.stopPropagation();
+      closePops();
+      const pop = document.createElement("div");
+      pop.className = "pop";
+      pop.innerHTML = `<button data-a="rename">Rename</button><button data-a="delete" class="danger">Delete track</button>`;
+      pop.addEventListener("click", async (ev) => {
+        const a = ev.target.dataset.a;
+        if (!a) return;
+        closePops();
+        try {
+          if (a === "rename") {
+            const n = prompt("Track name", t.name);
+            if (n && n.trim()) { await api(`/api/backtracks/${t.id}/rename`, { json: { title: n } }); loadTracks(); }
+          }
+          if (a === "delete" && confirm(`Delete “${t.name}”? Readings that use it will play without a backing track.`)) {
+            if (PV.id === t.id) PV.stop();
+            await api(`/api/backtracks/${t.id}`, { method: "DELETE" });
+            toast("Track deleted");
+            loadTracks();
+          }
+        } catch (err) { toast(err.message); }
+      });
+      el.querySelector(".menu").appendChild(pop);
+    });
+    list.appendChild(el);
+  }
+  PV.mark();
+}
+function fmtClock(s) {
+  s = Math.round(s || 0);
+  const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = s % 60;
+  return (h ? `${h}:${String(m).padStart(2, "0")}` : `${m}`) + `:${String(sec).padStart(2, "0")}`;
+}
+
+/* uploading tracks, from the tracks page or from the reader */
+let uploadForReader = false;
+async function uploadTracks(files) {
+  const status = $("#tracks-status");
+  let last = null;
+  for (const [i, f] of Array.from(files).entries()) {
+    const msg = `Uploading and levelling “${f.name}”${files.length > 1 ? ` (${i + 1} of ${files.length})` : ""}…`;
+    status.textContent = msg;
+    toast(msg, 60000);
+    const fd = new FormData();
+    fd.append("file", f);
+    try { last = await api("/api/backtracks", { method: "POST", body: fd }); }
+    catch (e) { toast(`${f.name}: ${e.message}`, 6000); }
+  }
+  status.textContent = "";
+  if (last) toast(files.length > 1 ? "Tracks added" : `Added “${last.name}”`);
+  await B.load(true);
+  if (!$("#v-tracks").classList.contains("hidden")) loadTracks();
+  if (uploadForReader && last && R.id) {
+    B.setChoice({ ...B.choice, id: last.id });
+    B.save();
+    B.fillDrawer();
+    R.updateStatus();
+  }
+  uploadForReader = false;
+}
+$("#bt-file").addEventListener("change", (e) => {
+  const files = e.target.files;
+  if (files.length) uploadTracks(files).finally(() => (e.target.value = ""));
+});
+$("#tracks-upload").addEventListener("click", () => { uploadForReader = false; $("#bt-file").click(); });
+$("#s-bt-upload").addEventListener("click", () => { uploadForReader = true; $("#bt-file").click(); });
+$("#tracks-back").addEventListener("click", () => {
+  const p = route.prev;
+  location.hash = p && !p.startsWith("#/tracks") ? p : "#/library";
+});
+
+$("#s-bt").addEventListener("change", (e) => {
+  R.unlock();
+  B.setChoice({ ...B.choice, id: e.target.value || null });
+  B.save();
+  B.drawerState();
+  R.updateStatus();
+});
+$("#s-bt-vol").addEventListener("input", (e) => {
+  B.choice.volume = +e.target.value / 100;
+  B.applyLevel();
+  B.drawerState();
+  B.save();
+});
+$("#s-voice-vol").addEventListener("input", (e) => {
+  B.choice.voice_volume = +e.target.value / 100;
+  B.applyVoice();
+  B.drawerState();
+  B.save();
+});
+$("#dl-bt").addEventListener("change", (e) => localStorage.setItem("lector.dlbt", e.target.checked ? "1" : "0"));
 
 /* reader controls */
 $("#p-play").addEventListener("click", () => R.togglePlay());
@@ -874,6 +1137,7 @@ $("#btn-settings").addEventListener("click", async () => {
   openDrawer("drawer-settings");
   R.updateStatus();
   $("#s-style").value = R.meta?.style || "";
+  B.fillDrawer();
   await fillVoiceSelect($("#s-voice"), R.meta?.voice);
 });
 $("#toc").addEventListener("click", async (e) => {
@@ -885,7 +1149,7 @@ $("#toc").addEventListener("click", async (e) => {
     toast("Queued");
     return R.refreshManifest();
   }
-  if (dl) { e.stopPropagation(); location.href = `/api/docs/${R.id}/export/section/${dl.dataset.dl}.mp3`; return; }
+  if (dl) { e.stopPropagation(); location.href = withBed(`/api/docs/${R.id}/export/section/${dl.dataset.dl}.mp3`); return; }
   const it = e.target.closest(".toc-item");
   if (it) { closeDrawers(); R.gotoSection(+it.dataset.sec); }
 });
@@ -929,8 +1193,11 @@ function download(path, btn) {
   location.href = path; // the server assembles the file, then the browser saves it
   setTimeout(() => { btn.disabled = false; btn.textContent = label; }, 3000);
 }
-$("#dl-full").addEventListener("click", (e) => download(`/api/docs/${R.id}/export/full.mp3`, e.target));
-$("#dl-zip").addEventListener("click", (e) => download(`/api/docs/${R.id}/export/sections.zip`, e.target));
+function withBed(path) {
+  return B.choice.id && B.includeInDownload() ? path + "?backtrack=1" : path;
+}
+$("#dl-full").addEventListener("click", (e) => download(withBed(`/api/docs/${R.id}/export/full.mp3`), e.target));
+$("#dl-zip").addEventListener("click", (e) => download(withBed(`/api/docs/${R.id}/export/sections.zip`), e.target));
 
 /* setup modal */
 $("#setup-all").addEventListener("click", () => { $$("#setup-secs input").forEach((i) => (i.checked = true)); R.updateEstimate(); });

@@ -183,3 +183,20 @@ textarea { resize: vertical; font-family: var(--serif); font-size: 17px; line-he
   .brand { font-size: 20px; }
   .player-row { gap: 12px; }
 }
+
+/* backing tracks */
+.track { padding: 12px 14px; display: flex; gap: 12px; align-items: center; }
+.track .body { flex: 1; min-width: 0; }
+.track .t { font-family: var(--serif); font-size: 19px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.track .m { font-size: 13px; color: var(--muted); margin-top: 2px; }
+.track .prev { width: 40px; height: 40px; border-radius: 50%; border: 1px solid var(--line); background: var(--bg2); color: var(--gold); cursor: pointer; flex: none; font-size: 14px; }
+.track .prev.on { background: var(--gold); color: #1a140c; border-color: var(--gold); }
+.track.in-use .t::after { content: "in use"; font-family: var(--sans); font-size: 11px; color: var(--gold); margin-left: 8px; vertical-align: middle; }
+.vol-field input[type=range] { width: 100%; margin-top: 8px; accent-color: var(--gold); }
+.check { display: flex; gap: 10px; align-items: center; font-size: 14px; color: var(--ink2); cursor: pointer; margin: 4px 0 2px; }
+.check input { accent-color: var(--gold); width: 17px; height: 17px; }
+.check.off { opacity: .5; cursor: default; }
+.bt-badge { margin-left: 6px; color: var(--gold); }
+@media (max-width: 560px) {
+  #btn-tracks { padding: 9px 10px; }
+}

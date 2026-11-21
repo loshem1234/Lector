@@ -13,7 +13,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=EB+Garamond:ital,wght@0,400;0,500;0,600;1,400&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="/static/style.css?v=1">
+<link rel="stylesheet" href="/static/style.css?v=3">
 </head>
 <body>
 
@@ -34,6 +34,7 @@
   <header class="topbar">
     <div class="brand"><span class="mark sm">Λ</span> Lector</div>
     <div class="grow"></div>
+    <button class="btn" id="btn-tracks" data-go="tracks">♫ Tracks</button>
     <button class="btn primary" id="btn-new">New reading</button>
     <button class="icon-btn" id="btn-logout" title="Sign out" aria-label="Sign out">⏻</button>
   </header>
@@ -48,6 +49,26 @@
     <div id="lib-empty" class="empty hidden">
       <p>Nothing here yet.</p>
       <p class="muted">Paste text or upload a PDF to begin.</p>
+    </div>
+  </main>
+</section>
+
+<!-- Backing tracks -->
+<section id="v-tracks" class="view hidden">
+  <header class="topbar">
+    <button class="icon-btn" id="tracks-back" aria-label="Back">←</button>
+    <div class="brand">Backing tracks</div>
+    <div class="grow"></div>
+    <button class="btn primary" id="tracks-upload">Upload track</button>
+  </header>
+  <main class="wrap">
+    <p class="muted small">Music or ambience that plays quietly under the reading. Tracks loop for as long as the reading lasts, and each one is levelled on upload so the volume setting sounds alike from track to track.</p>
+    <div class="lib-head"><h2>Library</h2><span id="tracks-total" class="muted small"></span></div>
+    <div id="tracks-status" class="muted small"></div>
+    <div id="tracks-list" class="lib-list"></div>
+    <div id="tracks-empty" class="empty hidden">
+      <p>No backing tracks yet.</p>
+      <p class="muted">Upload an MP3, M4A, WAV, FLAC or OGG file.</p>
     </div>
   </main>
 </section>
@@ -149,7 +170,24 @@
       <button class="btn" id="s-apply">Apply voice</button>
       <p class="muted small">Changing the voice regenerates the audio already made.</p>
 
+      <h4>Backing track</h4>
+      <div class="row">
+        <select id="s-bt"></select>
+        <button class="icon-btn" id="s-bt-upload" title="Upload a track" aria-label="Upload a track">＋</button>
+      </div>
+      <div id="s-bt-vol-row">
+        <label class="field vol-field">Reading volume <span id="s-voice-vol-label" class="muted"></span>
+          <input id="s-voice-vol" type="range" min="0" max="100" step="1" value="100">
+        </label>
+        <label class="field vol-field">Music volume <span id="s-bt-vol-label" class="muted"></span>
+          <input id="s-bt-vol" type="range" min="0" max="100" step="1" value="30">
+        </label>
+        <p id="s-ratio" class="muted small"></p>
+      </div>
+      <p class="muted small"><button type="button" class="link" data-go="tracks">Manage backing tracks</button></p>
+
       <h4>Download</h4>
+      <label class="check" id="dl-bt-row"><input type="checkbox" id="dl-bt"> <span>Include backing track <span id="dl-bt-name" class="muted"></span></span></label>
       <button class="btn wide" id="dl-full">Full MP3 with chapters</button>
       <button class="btn wide" id="dl-zip">One MP3 per section (.zip)</button>
       <p id="dl-note" class="muted small"></p>
@@ -195,6 +233,7 @@
 </section>
 
 <div id="toast" class="toast hidden"></div>
-<script src="/static/app.js?v=1"></script>
+<input type="file" id="bt-file" accept="audio/*,.mp3,.m4a,.aac,.wav,.flac,.ogg,.opus" multiple hidden>
+<script src="/static/app.js?v=3"></script>
 </body>
 </html>
