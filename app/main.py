@@ -14,7 +14,10 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import export, jobs, store
+import shutil
+import tempfile
+
+from . import backtracks, export, jobs, store
 from .config import ADMIN_PASSWORD, MOCK, SESSION_SECRET, TTS_MODEL
 from .gemini import GeminiError, list_voices
 from .ingest import parse_pdf, parse_text
@@ -194,7 +197,7 @@ def _need(doc_id: str) -> dict:
 async def get_meta(doc_id: str):
     meta = _need(doc_id)
     store.update_meta(doc_id, opened=time.time())
-    return {**meta, **_summary(doc_id)}
+    return {**meta, **_summary(doc_id), "backtrack": backtracks.effective(meta)}
 
 
 @app.get("/api/docs/{doc_id}/doc")
@@ -400,35 +403,117 @@ def _dl_name(meta, suffix):
 
 
 @app.get("/api/docs/{doc_id}/export/full.mp3")
-async def export_full(doc_id: str):
+async def export_full(doc_id: str, backtrack: bool = False):
     meta = _need(doc_id)
     try:
-        p = await asyncio.to_thread(export.full_mp3, doc_id)
+        p = await asyncio.to_thread(export.full_mp3_bed if backtrack else export.full_mp3, doc_id)
     except FileNotFoundError as e:
         raise HTTPException(409, str(e))
-    return FileResponse(p, media_type="audio/mpeg", filename=_dl_name(meta, ".mp3"))
+    return FileResponse(p, media_type="audio/mpeg",
+                        filename=_dl_name(meta, " (with backing track).mp3" if backtrack else ".mp3"))
 
 
 @app.get("/api/docs/{doc_id}/export/sections.zip")
-async def export_zip(doc_id: str):
+async def export_zip(doc_id: str, backtrack: bool = False):
     meta = _need(doc_id)
     try:
-        p = await asyncio.to_thread(export.sections_zip, doc_id)
+        p = await asyncio.to_thread(export.sections_zip_bed if backtrack else export.sections_zip, doc_id)
     except FileNotFoundError as e:
         raise HTTPException(409, str(e))
-    return FileResponse(p, media_type="application/zip", filename=_dl_name(meta, " (sections).zip"))
+    suffix = " (sections, with backing track).zip" if backtrack else " (sections).zip"
+    return FileResponse(p, media_type="application/zip", filename=_dl_name(meta, suffix))
 
 
 @app.get("/api/docs/{doc_id}/export/section/{si}.mp3")
-async def export_section(doc_id: str, si: int):
+async def export_section(doc_id: str, si: int, backtrack: bool = False):
     meta = _need(doc_id)
     doc = store.load_doc(doc_id)
+    if not 0 <= si < len(doc["sections"]):
+        raise HTTPException(404, "No such section")
     try:
-        p = await asyncio.to_thread(export.section_mp3, doc_id, si)
+        p = await asyncio.to_thread(export.section_mp3_bed if backtrack else export.section_mp3, doc_id, si)
     except FileNotFoundError as e:
         raise HTTPException(409, str(e))
     name = f"{si + 1:02d} - {export._safe(doc['sections'][si]['title'])}.mp3"
     return FileResponse(p, media_type="audio/mpeg", filename=name)
+
+
+# ----------------------------------------------------------------------------- backing tracks
+
+MAX_TRACK_UPLOAD = 250 * 1024 * 1024
+
+
+@app.get("/api/backtracks")
+async def list_backtracks():
+    items = backtracks.list_all()
+    return {"items": items, "total_size": sum(t["size"] for t in items),
+            "default": backtracks.effective(None)}
+
+
+@app.post("/api/backtracks")
+async def upload_backtrack(file: UploadFile = File(...), name: str = Form("")):
+    tmpdir = Path(tempfile.mkdtemp(prefix="bt-"))
+    try:
+        src = tmpdir / "upload"
+        size = 0
+        with open(src, "wb") as f:
+            while chunk := await file.read(1024 * 1024):
+                size += len(chunk)
+                if size > MAX_TRACK_UPLOAD:
+                    raise HTTPException(413, "That file is larger than 250 MB")
+                f.write(chunk)
+        label = name.strip() or Path(file.filename or "").stem.replace("_", " ")
+        try:
+            return await asyncio.to_thread(backtracks.add, src, label)
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
+
+@app.get("/api/backtracks/{tid}.mp3")
+async def backtrack_audio(tid: str):
+    p = backtracks.path(tid)
+    if not p:
+        raise HTTPException(404, "No such track")
+    return FileResponse(p, media_type="audio/mpeg",
+                        headers={"Cache-Control": "private, max-age=31536000, immutable"})
+
+
+@app.post("/api/backtracks/{tid}/rename")
+async def rename_backtrack(tid: str, body: Rename):
+    m = backtracks.rename(tid, body.title)
+    if not m:
+        raise HTTPException(404, "No such track")
+    return m
+
+
+@app.delete("/api/backtracks/{tid}")
+async def delete_backtrack(tid: str):
+    if not backtracks.delete(tid):
+        raise HTTPException(404, "No such track")
+    await asyncio.to_thread(export.drop_track_exports, tid)
+    return {"ok": True}
+
+
+class BacktrackChoice(BaseModel):
+    id: str | None = None
+    volume: float = backtracks.DEFAULT_VOLUME
+    voice_volume: float = backtracks.DEFAULT_VOICE_VOLUME
+
+
+@app.post("/api/docs/{doc_id}/backtrack")
+async def set_doc_backtrack(doc_id: str, body: BacktrackChoice):
+    _need(doc_id)
+    if body.id and not backtracks.path(body.id):
+        raise HTTPException(404, "No such track")
+    choice = {"id": body.id or None, "volume": backtracks.clamp_volume(body.volume),
+              "voice_volume": backtracks.clamp_volume(body.voice_volume, backtracks.DEFAULT_VOICE_VOLUME)}
+    store.update_meta(doc_id, backtrack=choice)
+    s = backtracks.load_settings()
+    s["backtrack"] = choice  # new documents start with the last choice
+    backtracks.save_settings(s)
+    return choice
 
 
 @app.delete("/api/docs/{doc_id}")

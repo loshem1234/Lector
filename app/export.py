@@ -6,7 +6,7 @@ import subprocess
 import zipfile
 from pathlib import Path
 
-from . import store
+from . import backtracks, store
 
 
 def _safe(name: str, n: int = 60) -> str:
@@ -102,3 +102,83 @@ def sections_zip(doc_id: str) -> Path:
             p = section_mp3(doc_id, si)
             z.write(p, f"{n:02d} - {_safe(doc['sections'][si]['title'])}.mp3")
     return out
+
+
+# ----------------------------------------------------------------------------- backing track
+
+def _mix(speech: Path, bed: Path, gains: tuple[float, float], out: Path, metadata: Path | None = None):
+    """Lay a looping backing track under the speech, with gentle fades at both ends."""
+    voice_gain, volume = gains
+    dur = backtracks.probe_duration(speech)
+    fade_in = min(3.0, dur / 4)
+    fade_out = min(5.0, dur / 4)
+    graph = (
+        f"[0:a]aformat=sample_rates=44100:channel_layouts=stereo,volume={voice_gain:.3f}[v];"
+        f"[1:a]aformat=sample_rates=44100:channel_layouts=stereo,volume={volume:.3f},"
+        f"afade=t=in:st=0:d={fade_in:.2f},afade=t=out:st={max(0.0, dur - fade_out):.2f}:d={fade_out:.2f}[b];"
+        "[v][b]amix=inputs=2:duration=first:dropout_transition=0:normalize=0,alimiter=limit=0.97[m]"
+    )
+    args = ["-i", str(speech), "-stream_loop", "-1", "-i", str(bed)]
+    if metadata:
+        args += ["-i", str(metadata)]
+    args += ["-filter_complex", graph, "-map", "[m]", "-t", f"{dur:.3f}"]
+    if metadata:
+        args += ["-map_metadata", "2", "-map_chapters", "2"]
+    else:
+        args += ["-map_metadata", "0"]
+    tmp = out.with_suffix(".part.mp3")
+    _ff(args + ["-c:a", "libmp3lame", "-b:a", "160k", "-id3v2_version", "3", str(tmp)])
+    tmp.replace(out)
+
+
+def _bed(doc_id: str):
+    choice = backtracks.effective(store.load_meta(doc_id))
+    bed = backtracks.path(choice["id"]) if choice["id"] else None
+    if not bed:
+        raise FileNotFoundError("No backing track is selected for this document")
+    return choice["id"], backtracks.mix_gains(choice), bed
+
+
+def _tag(tid: str, gains: tuple[float, float]) -> str:
+    return f"bt_{tid}_{int(round(gains[0] * 100))}_{int(round(gains[1] * 100))}"
+
+
+def section_mp3_bed(doc_id: str, si: int) -> Path:
+    tid, gains, bed = _bed(doc_id)
+    plain = section_mp3(doc_id, si)
+    out = plain.with_name(f"s{si}_{_tag(tid, gains)}.mp3")
+    if not out.exists():
+        _mix(plain, bed, gains, out)
+    return out
+
+
+def full_mp3_bed(doc_id: str) -> Path:
+    tid, gains, bed = _bed(doc_id)
+    plain = full_mp3(doc_id)
+    out = plain.with_name(f"full_{_tag(tid, gains)}.mp3")
+    if not out.exists():
+        _mix(plain, bed, gains, out, metadata=plain.with_name("chapters.txt"))
+    return out
+
+
+def sections_zip_bed(doc_id: str) -> Path:
+    tid, gains, bed = _bed(doc_id)
+    doc, meta, secs, audio = _ready(doc_id)
+    if not secs:
+        raise FileNotFoundError("No audio has been generated yet")
+    out = store.doc_dir(doc_id) / "export" / f"sections_{_tag(tid, gains)}.zip"
+    if out.exists():
+        return out
+    tmp = out.with_suffix(".part")
+    with zipfile.ZipFile(tmp, "w", zipfile.ZIP_STORED) as z:
+        for n, si in enumerate(sorted(secs), 1):
+            z.write(section_mp3_bed(doc_id, si), f"{n:02d} - {_safe(doc['sections'][si]['title'])}.mp3")
+    tmp.replace(out)
+    return out
+
+
+def drop_track_exports(tid: str):
+    """Remove cached mixes that used a deleted track."""
+    for d in store.DOCS_DIR.glob("*/export"):
+        for f in d.glob(f"*_bt_{tid}_*"):
+            f.unlink(missing_ok=True)
